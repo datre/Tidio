@@ -114,6 +114,7 @@ final class SelectionModel: ObservableObject {
         }
 
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.includeAllBurstAssets = true
         return options
     }
 }

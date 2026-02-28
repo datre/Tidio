@@ -69,39 +69,17 @@ enum QualityMode: String, CaseIterable, Identifiable {
     }
 
     /// Resolved HEIC quality factor (0.0–1.0).
-    /// - Parameters:
-    ///   - sourceBitsPerPixel: Estimated bits-per-pixel of the source image, used for .matchOriginal
-    ///   - customQuality: The user-set custom quality (passed from AppSettings to avoid actor boundary crossing)
-    func heicQuality(sourceBitsPerPixel: Double? = nil, customQuality: Double = 0.75) -> Double {
+    /// Uses a flat value per mode — HEIC at 0.76 produces visually equivalent
+    /// output to the source at roughly 40–50% smaller file size regardless of
+    /// source content (noise, detail level, etc.).
+    /// - Parameter customQuality: The user-set custom quality (passed from AppSettings to avoid actor boundary crossing)
+    func heicQuality(customQuality: Double = 0.75) -> Double {
         switch self {
-        case .matchOriginal:
-            guard let bpp = sourceBitsPerPixel else { return 0.76 }
-            return Self.bppToHEICQuality(bpp)
-        case .high:      return 0.82
-        case .balanced:  return 0.65
-        case .compact:   return 0.50
-        case .custom:    return customQuality
-        }
-    }
-
-    /// Maps source bits-per-pixel to an HEIC quality factor that produces
-    /// similar perceived visual quality at a smaller file size.
-    ///
-    /// Reference BPP ranges for JPEG:
-    /// - Ultra-high quality (q95+): ~6–10+ bpp
-    /// - High quality (q85–95):     ~3–6 bpp
-    /// - Medium quality (q70–85):   ~1.5–3 bpp
-    /// - Low quality (q50–70):      ~0.5–1.5 bpp
-    ///
-    /// HEIC achieves equivalent visual quality at roughly 40–60% of the file size,
-    /// so we map these ranges to lower HEIC quality factors.
-    private static func bppToHEICQuality(_ bpp: Double) -> Double {
-        switch bpp {
-        case 5.0...:       return 0.82   // Very high quality source → HEIC high
-        case 3.0..<5.0:    return 0.76   // High quality source
-        case 1.5..<3.0:    return 0.68   // Medium quality source
-        case 0.8..<1.5:    return 0.58   // Lower quality source
-        default:           return 0.50   // Already heavily compressed
+        case .matchOriginal: return 0.76
+        case .high:          return 0.82
+        case .balanced:      return 0.65
+        case .compact:       return 0.50
+        case .custom:        return customQuality
         }
     }
 }

@@ -1,6 +1,9 @@
 import Foundation
 import Photos
 import ImageIO
+import os.log
+
+private let log = Logger(subsystem: "com.tidio", category: "CompressionEngine")
 
 /// Orchestrates the full compression pipeline for a batch of assets.
 /// Handles iCloud downloads, delegates to ImageCompressor / VideoCompressor,
@@ -86,9 +89,9 @@ final class CompressionEngine: ObservableObject {
     // MARK: - Prefetched Data
 
     /// Holds pre-downloaded data for the next asset in the queue.
-    private enum PrefetchedData: Sendable {
+    private enum PrefetchedData: @unchecked Sendable {
         case imageData(Data)
-        case videoAsset(AVURLAsset)
+        case videoAsset(AVAsset)
     }
 
     // MARK: - Run Job
@@ -175,6 +178,8 @@ final class CompressionEngine: ObservableObject {
                 ))
             } catch {
                 failed += 1
+                let fullError = String(describing: error)
+                log.error("  ✗ FAILED: \(filename) — \(fullError)")
                 errors.append("\(filename): \(error.localizedDescription)")
                 updatePhase(.failed, fraction: 1)
                 failedAssets.append(asset)
@@ -237,8 +242,8 @@ final class CompressionEngine: ObservableObject {
                     let (data, _) = try await PhotoLibraryService.shared.requestImageData(for: asset)
                     return .imageData(data)
                 } else if asset.mediaType == .video {
-                    let avAsset = try await PhotoLibraryService.shared.requestAVAsset(for: asset)
-                    return .videoAsset(avAsset)
+                    let box = try await PhotoLibraryService.shared.requestAVAsset(for: asset)
+                    return .videoAsset(box.value)
                 }
             } catch {}
             return nil
@@ -256,15 +261,27 @@ final class CompressionEngine: ObservableObject {
         originalsAlbum: PHAssetCollection,
         prefetchedData: PrefetchedData?
     ) async throws -> (original: Int64, compressed: Int64, compressedFilename: String) {
+        let resources = PHAssetResource.assetResources(for: asset)
+        let resourceTypes = resources.map { "\($0.type.rawValue):\($0.originalFilename)" }
+        let subtypes = asset.mediaSubtypes
+        log.info("━━━ processAsset: \(originalFilename) ━━━")
+        log.info("  mediaType=\(asset.mediaType.rawValue) subtypes=\(subtypes.rawValue) burstID=\(asset.burstIdentifier ?? "none") representsBurst=\(asset.representsBurst)")
+        log.info("  isLivePhoto=\(subtypes.contains(.photoLive)) resources=\(resourceTypes)")
+        log.info("  prefetched=\(prefetchedData != nil ? "yes" : "no")")
+
         let assetItem = AssetItem(asset: asset)
+        log.info("  format=\(assetItem.originalFormat.displayName) target=\(String(describing: assetItem.originalFormat.compressionTarget))")
 
         // Skip if already in target format and skip rule is active
         switch assetItem.originalFormat.compressionTarget {
         case .alreadyHEIC where settings.skipAlreadyHEIC:
+            log.info("  → SKIP: already HEIC")
             throw CompressionSkipReason.alreadyOptimal
         case .alreadyHEVC where settings.skipAlreadyHEVC:
+            log.info("  → SKIP: already HEVC")
             throw CompressionSkipReason.alreadyOptimal
         case .unsupported:
+            log.info("  → SKIP: unsupported format")
             throw CompressionSkipReason.alreadyOptimal
         default:
             break
@@ -273,10 +290,13 @@ final class CompressionEngine: ObservableObject {
         let result: (newAsset: PHAsset, originalBytes: Int64, compressedBytes: Int64)
 
         if asset.mediaType == .image {
+            log.info("  → compressImage path")
             result = try await compressImage(asset, originalFilename: originalFilename, settings: settings, cameraModelFilter: cameraModelFilter, prefetchedData: prefetchedData)
         } else if asset.mediaType == .video {
+            log.info("  → compressVideo path")
             result = try await compressVideo(asset, originalFilename: originalFilename, settings: settings, prefetchedData: prefetchedData)
         } else {
+            log.info("  → SKIP: unknown mediaType \(asset.mediaType.rawValue)")
             throw CompressionSkipReason.alreadyOptimal
         }
 
@@ -325,39 +345,83 @@ final class CompressionEngine: ObservableObject {
 
         // For Live Photos, download the paired video in parallel with compression
         let isLivePhoto = asset.mediaSubtypes.contains(.photoLive)
-        let pairedVideoTask: Task<Data?, Never>? = isLivePhoto ? Task.detached {
-            try? await PhotoLibraryService.shared.requestPairedVideoData(for: asset)
+        log.info("  imageData: \(sourceData.count) bytes, isLivePhoto=\(isLivePhoto)")
+
+        let pairedVideoTask: Task<Result<Data, Error>?, Never>? = isLivePhoto ? Task.detached {
+            do {
+                let data = try await PhotoLibraryService.shared.requestPairedVideoData(for: asset)
+                log.info("  pairedVideo: downloaded \(data.count) bytes")
+                return .success(data)
+            } catch {
+                log.error("  pairedVideo: FAILED — \(error.localizedDescription)")
+                return .failure(error)
+            }
         } : nil
+
+        // For Live Photos, extract the content identifier BEFORE compression
+        // (HEIC encoding may strip the MakerApple dictionary where it's stored)
+        let contentIdentifier: String? = isLivePhoto
+            ? ImageCompressor.extractContentIdentifier(from: sourceData)
+            : nil
+        if isLivePhoto {
+            log.info("  Live Photo contentIdentifier=\(contentIdentifier ?? "NOT FOUND")")
+        }
 
         updatePhase(.compressing, fraction: 0.3)
 
-        let compressed = try ImageCompressor.compress(
+        log.info("  compressing image: quality=\(settings.photoQualityMode.rawValue) cap=\(settings.resolutionCap.rawValue)")
+        var compressed = try ImageCompressor.compress(
             sourceData: sourceData,
             qualityMode: settings.photoQualityMode,
             customQuality: settings.photoCustomQuality,
             resolutionCap: settings.resolutionCap
         )
+        log.info("  compressed: \(sourceData.count) → \(compressed.count) bytes")
+
+        // For Live Photos, ensure the content identifier is in the HEIC output.
+        // CGImageDestination may drop the MakerApple dictionary during HEIC encoding.
+        if isLivePhoto, let identifier = contentIdentifier {
+            compressed = Self.ensureContentIdentifier(in: compressed, identifier: identifier)
+        }
+
         updatePhase(.saving, fraction: 0.9)
 
         let saved: PHAsset
 
-        if isLivePhoto, let pairedVideoData = await pairedVideoTask?.value {
-            // Save as Live Photo (HEIC still + paired video)
-            saved = try await PhotoLibraryService.shared.saveLivePhoto(
-                imageData: compressed,
-                pairedVideoData: pairedVideoData,
-                creationDate: asset.creationDate,
-                location: asset.location,
-                originalFilename: originalFilename
-            )
+        if isLivePhoto, let pairedResult = await pairedVideoTask?.value {
+            switch pairedResult {
+            case .success(let pairedVideoData):
+                // Save as Live Photo (HEIC still + paired video)
+                log.info("  saving as Live Photo (still=\(compressed.count), video=\(pairedVideoData.count))")
+                saved = try await PhotoLibraryService.shared.saveLivePhoto(
+                    imageData: compressed,
+                    pairedVideoData: pairedVideoData,
+                    creationDate: asset.creationDate,
+                    location: asset.location,
+                    originalFilename: originalFilename
+                )
+                log.info("  ✓ saved Live Photo: \(saved.localIdentifier)")
+            case .failure(let pairError):
+                // Paired video failed — save as regular image and log the issue
+                log.warning("  pairedVideo failed (\(pairError.localizedDescription)), saving as regular image")
+                saved = try await PhotoLibraryService.shared.saveImage(
+                    data: compressed,
+                    creationDate: asset.creationDate,
+                    location: asset.location,
+                    originalFilename: originalFilename
+                )
+                log.info("  ✓ saved regular image (Live Photo degraded): \(saved.localIdentifier)")
+            }
         } else {
             // Regular image save
+            log.info("  saving as regular image")
             saved = try await PhotoLibraryService.shared.saveImage(
                 data: compressed,
                 creationDate: asset.creationDate,
                 location: asset.location,
                 originalFilename: originalFilename
             )
+            log.info("  ✓ saved: \(saved.localIdentifier)")
         }
 
         return (saved, Int64(sourceData.count), Int64(compressed.count))
@@ -371,7 +435,7 @@ final class CompressionEngine: ObservableObject {
         settings: AppSettings,
         prefetchedData: PrefetchedData?
     ) async throws -> (newAsset: PHAsset, originalBytes: Int64, compressedBytes: Int64) {
-        let avAsset: AVURLAsset
+        let avAsset: AVAsset
 
         // Use prefetched data if available, otherwise download now
         if case .videoAsset(let prefetched) = prefetchedData {
@@ -379,29 +443,45 @@ final class CompressionEngine: ObservableObject {
             avAsset = prefetched
         } else {
             updatePhase(.downloading, fraction: 0)
-            avAsset = try await PhotoLibraryService.shared.requestAVAsset(for: asset)
+            log.info("  downloading video via requestAVAsset...")
+            avAsset = try await PhotoLibraryService.shared.requestAVAsset(for: asset).value
         }
 
-        // Measure original size from the source file
-        let originalSize = (try? FileManager.default.attributesOfItem(atPath: avAsset.url.path)[.size] as? Int64) ?? 0
+        let avType = String(describing: type(of: avAsset))
+        let urlInfo: String
+        if let urlAsset = avAsset as? AVURLAsset {
+            urlInfo = urlAsset.url.lastPathComponent
+        } else {
+            urlInfo = "N/A (composition)"
+        }
+        log.info("  avAsset type=\(avType) url=\(urlInfo)")
+
+        // Measure original size (works for both AVURLAsset and AVComposition)
+        nonisolated(unsafe) let unsafeAsset = avAsset
+        let originalSize = await VideoCompressor.estimateOriginalSize(for: unsafeAsset)
+        log.info("  originalSize=\(originalSize) bytes")
 
         updatePhase(.compressing, fraction: 0.1)
 
+        log.info("  compressing video: quality=\(settings.videoQualityMode.rawValue) cap=\(settings.resolutionCap.rawValue)")
         let outputURL = try await VideoCompressor.compress(
-            sourceAsset: avAsset,
+            sourceAsset: unsafeAsset,
             qualityMode: settings.videoQualityMode,
             resolutionCap: settings.resolutionCap
         )
 
         let compressedSize = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64) ?? 0
+        log.info("  video compressed: \(originalSize) → \(compressedSize) bytes")
 
         updatePhase(.saving, fraction: 0.9)
+        log.info("  saving video to Photos...")
         let saved = try await PhotoLibraryService.shared.saveVideo(
             at: outputURL,
             creationDate: asset.creationDate,
             location: asset.location,
             originalFilename: originalFilename
         )
+        log.info("  ✓ saved video: \(saved.localIdentifier)")
 
         // shouldMoveFile handles cleanup, but ensure temp file is gone
         try? FileManager.default.removeItem(at: outputURL)
@@ -421,6 +501,60 @@ final class CompressionEngine: ObservableObject {
         let model = tiff[kCGImagePropertyTIFFModel] as? String ?? ""
         let combined = [make, model].filter { !$0.isEmpty }.joined(separator: " ")
         return combined.isEmpty ? nil : combined
+    }
+
+    // MARK: - Live Photo Content Identifier
+
+    /// Ensures the HEIC data contains the MakerApple content identifier required
+    /// for Photos to link the still and video of a Live Photo.
+    /// CGImageDestination may strip the MakerApple dictionary during HEIC encoding,
+    /// so we re-read and re-write with the identifier explicitly set.
+    static func ensureContentIdentifier(in heicData: Data, identifier: String) -> Data {
+        guard let source = CGImageSourceCreateWithData(heicData as CFData, nil) else {
+            log.warning("  ensureContentIdentifier: could not create source from HEIC")
+            return heicData
+        }
+
+        var props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
+
+        // Check if MakerApple with key 17 already exists
+        if let makerApple = props[kCGImagePropertyMakerAppleDictionary] as? [CFString: Any],
+           let existing = makerApple["17" as CFString] as? String, !existing.isEmpty {
+            log.info("  ensureContentIdentifier: already present (\(existing))")
+            return heicData
+        }
+
+        // Inject the content identifier into MakerApple dictionary
+        var makerApple = (props[kCGImagePropertyMakerAppleDictionary] as? [CFString: Any]) ?? [:]
+        makerApple["17" as CFString] = identifier
+        props[kCGImagePropertyMakerAppleDictionary] = makerApple
+        log.info("  ensureContentIdentifier: injected '\(identifier)' into MakerApple")
+
+        // Re-encode the HEIC with the patched metadata
+        guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            log.warning("  ensureContentIdentifier: could not decode HEIC image")
+            return heicData
+        }
+
+        let output = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            output, "public.heic" as CFString, 1, nil
+        ) else {
+            log.warning("  ensureContentIdentifier: could not create destination")
+            return heicData
+        }
+
+        // Preserve the original compression quality by not re-specifying it
+        CGImageDestinationAddImage(dest, cgImage, props as CFDictionary)
+
+        guard CGImageDestinationFinalize(dest) else {
+            log.warning("  ensureContentIdentifier: finalize failed")
+            return heicData
+        }
+
+        let result = output as Data
+        log.info("  ensureContentIdentifier: re-encoded HEIC \(heicData.count) → \(result.count) bytes")
+        return result
     }
 
     // MARK: - Progress Helpers

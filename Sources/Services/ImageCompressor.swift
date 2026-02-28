@@ -2,6 +2,9 @@ import Foundation
 import ImageIO
 import CoreImage
 import UniformTypeIdentifiers
+import os.log
+
+private let log = Logger(subsystem: "com.tidio", category: "ImageCompressor")
 
 /// Compresses a single image asset to HEIC, preserving all metadata.
 struct ImageCompressor {
@@ -22,9 +25,7 @@ struct ImageCompressor {
             throw ImageCompressionError.invalidSource
         }
 
-        // Read source quality for Match Original — estimate from bits-per-pixel
-        let sourceBPP = estimateBitsPerPixel(source: source, dataSize: sourceData.count)
-        let heicQuality = qualityMode.heicQuality(sourceBitsPerPixel: sourceBPP, customQuality: customQuality)
+        let heicQuality = qualityMode.heicQuality(customQuality: customQuality)
 
         // Read all source properties (EXIF, TIFF, GPS, IPTC, etc.)
         var sourceProps = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
@@ -78,6 +79,18 @@ struct ImageCompressor {
         return outputData as Data
     }
 
+    /// Extracts the Live Photo content identifier from source image data.
+    /// This is stored in the MakerApple dictionary at key "17".
+    static func extractContentIdentifier(from data: Data) -> String? {
+        guard let source = CGImageSource.create(data: data),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let makerApple = props[kCGImagePropertyMakerAppleDictionary] as? [CFString: Any]
+        else { return nil }
+        // Key 17 holds the content identifier string
+        let key = "17" as CFString
+        return makerApple[key] as? String
+    }
+
     // MARK: - Resolution Cap
 
     private static func applyResolutionCap(to image: CGImage, cap: ResolutionCap) throws -> CGImage {
@@ -111,21 +124,6 @@ struct ImageCompressor {
         return resized
     }
 
-    // MARK: - Source Quality Estimation
-
-    /// Estimates the source image's bits-per-pixel from file size and pixel dimensions.
-    /// This is a reliable proxy for quality level that works with any image format
-    /// (JPEG, PNG, HEIC, etc.), unlike the JFIF quality tag which rarely exists.
-    private static func estimateBitsPerPixel(source: CGImageSource, dataSize: Int) -> Double? {
-        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = props[kCGImagePropertyPixelWidth] as? Int,
-              let height = props[kCGImagePropertyPixelHeight] as? Int,
-              width > 0, height > 0
-        else { return nil }
-        let totalPixels = Double(width * height)
-        let totalBits = Double(dataSize) * 8.0
-        return totalBits / totalPixels
-    }
 }
 
 // MARK: - CGImageSource helper

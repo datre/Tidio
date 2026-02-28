@@ -1,6 +1,9 @@
 import Foundation
 import Photos
 import AppKit
+import os.log
+
+private let log = Logger(subsystem: "com.tidio", category: "PhotoLibraryService")
 
 /// Wraps all PhotoKit interactions: authorization, fetching assets/albums,
 /// thumbnail loading, and album management.
@@ -61,6 +64,7 @@ actor PhotoLibraryService {
     func fetchAssets(in collection: PHAssetCollection) -> [AssetItem] {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.includeAllBurstAssets = true
         let result = PHAsset.fetchAssets(in: collection, options: options)
         var items: [AssetItem] = []
         result.enumerateObjects { asset, _, _ in
@@ -72,6 +76,7 @@ actor PhotoLibraryService {
     func fetchAllAssets() -> [AssetItem] {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.includeAllBurstAssets = true
         let result = PHAsset.fetchAssets(with: options)
         var items: [AssetItem] = []
         result.enumerateObjects { asset, _, _ in
@@ -110,7 +115,20 @@ actor PhotoLibraryService {
 
     /// Requests the full-resolution data for an image asset.
     /// Downloads from iCloud if necessary (networkAccessAllowed = true).
+    /// Falls back to PHAssetResourceManager for burst photos or other cases
+    /// where requestImageDataAndOrientation fails.
     func requestImageData(for asset: PHAsset) async throws -> (Data, String?) {
+        do {
+            return try await requestImageDataViaManager(for: asset)
+        } catch {
+            // Fallback: use PHAssetResourceManager to read the raw resource data directly.
+            // This handles burst photo members and other edge cases where the
+            // standard PHImageManager API fails.
+            return try await requestImageDataViaResource(for: asset)
+        }
+    }
+
+    private func requestImageDataViaManager(for asset: PHAsset) async throws -> (Data, String?) {
         try await withCheckedThrowingContinuation { continuation in
             let options = PHImageRequestOptions()
             options.isNetworkAccessAllowed = true
@@ -134,9 +152,43 @@ actor PhotoLibraryService {
         }
     }
 
+    /// Fallback: reads raw image resource data via PHAssetResourceManager.
+    private func requestImageDataViaResource(for asset: PHAsset) async throws -> (Data, String?) {
+        let resources = PHAssetResource.assetResources(for: asset)
+        // Look for the full-size photo, then fall back to any photo resource
+        guard let photoResource = resources.first(where: { $0.type == .fullSizePhoto })
+                ?? resources.first(where: { $0.type == .photo })
+        else {
+            throw LibraryError.dataUnavailable
+        }
+
+        let data: Data = try await withCheckedThrowingContinuation { continuation in
+            var buffer = Data()
+            let options = PHAssetResourceRequestOptions()
+            options.isNetworkAccessAllowed = true
+
+            PHAssetResourceManager.default().requestData(
+                for: photoResource,
+                options: options,
+                dataReceivedHandler: { chunk in
+                    buffer.append(chunk)
+                },
+                completionHandler: { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: buffer)
+                    }
+                }
+            )
+        }
+        return (data, photoResource.uniformTypeIdentifier)
+    }
+
     /// Requests the full-resolution AVAsset for a video.
     /// Downloads from iCloud if necessary.
-    func requestAVAsset(for asset: PHAsset) async throws -> AVURLAsset {
+    /// Returns AVURLAsset for regular videos, AVComposition for slo-mo/time-lapse.
+    func requestAVAsset(for asset: PHAsset) async throws -> UncheckedSendableBox<AVAsset> {
         try await withCheckedThrowingContinuation { continuation in
             let options = PHVideoRequestOptions()
             options.isNetworkAccessAllowed = true
@@ -150,11 +202,11 @@ actor PhotoLibraryService {
                     continuation.resume(throwing: error)
                     return
                 }
-                guard let urlAsset = avAsset as? AVURLAsset else {
+                guard let avAsset else {
                     continuation.resume(throwing: LibraryError.dataUnavailable)
                     return
                 }
-                continuation.resume(returning: urlAsset)
+                continuation.resume(returning: UncheckedSendableBox(avAsset))
             }
         }
     }
@@ -194,12 +246,21 @@ actor PhotoLibraryService {
     // MARK: - Live Photo Resource
 
     /// Downloads the paired video resource data for a Live Photo.
-    /// Returns nil if the asset is not a Live Photo or the resource can't be fetched.
+    /// Checks for both `.pairedVideo` (modern) and `.fullSizePairedVideo` (older Live Photos).
     func requestPairedVideoData(for asset: PHAsset) async throws -> Data {
         let resources = PHAssetResource.assetResources(for: asset)
-        guard let pairedVideo = resources.first(where: { $0.type == .pairedVideo }) else {
+        let allTypes = resources.map { "type=\($0.type.rawValue) file=\($0.originalFilename)" }
+        log.info("  requestPairedVideoData: asset=\(asset.localIdentifier)")
+        log.info("  resources: \(allTypes)")
+
+        // Prefer .pairedVideo (standard), fall back to .fullSizePairedVideo (older Live Photos)
+        guard let pairedVideo = resources.first(where: { $0.type == .pairedVideo })
+                ?? resources.first(where: { $0.type == .fullSizePairedVideo })
+        else {
+            log.error("  requestPairedVideoData: NO paired video resource found! Available types: \(resources.map { $0.type.rawValue })")
             throw LibraryError.dataUnavailable
         }
+        log.info("  requestPairedVideoData: using resource type=\(pairedVideo.type.rawValue) file=\(pairedVideo.originalFilename)")
 
         return try await withCheckedThrowingContinuation { continuation in
             var buffer = Data()
@@ -224,6 +285,9 @@ actor PhotoLibraryService {
     }
 
     /// Saves a new Live Photo asset (still HEIC + paired video). Returns the new PHAsset.
+    ///
+    /// Both resources are written to temp files first — Photos validates the content
+    /// identifier link between still and video, which works more reliably from files.
     func saveLivePhoto(
         imageData: Data,
         pairedVideoData: Data,
@@ -231,25 +295,42 @@ actor PhotoLibraryService {
         location: CLLocation?,
         originalFilename: String? = nil
     ) async throws -> PHAsset {
+        log.info("  saveLivePhoto: still=\(imageData.count) bytes, video=\(pairedVideoData.count) bytes, filename=\(originalFilename ?? "nil")")
+
+        // Write both resources to temp files — PHAssetCreationRequest handles
+        // Live Photo content identifier validation more reliably from file URLs.
+        let tempDir = FileManager.default.temporaryDirectory
+        let imageURL = tempDir.appendingPathComponent(UUID().uuidString + ".heic")
+        let videoURL = tempDir.appendingPathComponent(UUID().uuidString + ".mov")
+        try imageData.write(to: imageURL)
+        try pairedVideoData.write(to: videoURL)
+
+        defer {
+            try? FileManager.default.removeItem(at: imageURL)
+            try? FileManager.default.removeItem(at: videoURL)
+        }
+
         var placeholder: PHObjectPlaceholder?
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
 
             // Still image resource
             let imageOpts = PHAssetResourceCreationOptions()
+            imageOpts.shouldMoveFile = true
             if let name = originalFilename {
                 let stem = (name as NSString).deletingPathExtension
                 imageOpts.originalFilename = stem + ".heic"
             }
-            request.addResource(with: .photo, data: imageData, options: imageOpts)
+            request.addResource(with: .photo, fileURL: imageURL, options: imageOpts)
 
             // Paired video resource
             let videoOpts = PHAssetResourceCreationOptions()
+            videoOpts.shouldMoveFile = true
             if let name = originalFilename {
                 let stem = (name as NSString).deletingPathExtension
                 videoOpts.originalFilename = stem + ".mov"
             }
-            request.addResource(with: .pairedVideo, data: pairedVideoData, options: videoOpts)
+            request.addResource(with: .pairedVideo, fileURL: videoURL, options: videoOpts)
 
             if let date = creationDate { request.creationDate = date }
             if let loc = location { request.location = loc }
@@ -265,15 +346,24 @@ actor PhotoLibraryService {
     /// - Parameter originalFilename: If provided, the resource's filename is set to this
     ///   (with extension changed to .heic).
     func saveImage(data: Data, creationDate: Date?, location: CLLocation?, originalFilename: String? = nil) async throws -> PHAsset {
+        // Write to temp file first — addResource(with:fileURL:) is more reliable
+        // than addResource(with:data:) for certain asset types (burst members, etc.)
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".heic")
+        try data.write(to: tempURL)
+
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
         var placeholder: PHObjectPlaceholder?
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
             let resOpts = PHAssetResourceCreationOptions()
+            resOpts.shouldMoveFile = true
             if let name = originalFilename {
                 let stem = (name as NSString).deletingPathExtension
                 resOpts.originalFilename = stem + ".heic"
             }
-            request.addResource(with: .photo, data: data, options: resOpts)
+            request.addResource(with: .photo, fileURL: tempURL, options: resOpts)
             if let date = creationDate { request.creationDate = date }
             if let loc = location { request.location = loc }
             placeholder = request.placeholderForCreatedAsset
@@ -329,3 +419,9 @@ enum LibraryError: LocalizedError {
 
 import AVFoundation
 import CoreLocation
+
+/// Wraps a non-Sendable value for crossing actor boundaries where safety is ensured by design.
+struct UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
+}
