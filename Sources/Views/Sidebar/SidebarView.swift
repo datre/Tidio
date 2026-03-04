@@ -6,6 +6,7 @@ struct SidebarView: View {
     @ObservedObject var selection: SelectionModel
     let onSelectAllPhotos: () -> Void
     let onSelectAlbum: (AlbumItem) -> Void
+    let onOpenFolder: () -> Void
 
     var body: some View {
         List {
@@ -24,6 +25,16 @@ struct SidebarView: View {
                         )
                     }
                 }
+            }
+
+            // Folder section
+            Section("Folders") {
+                Button {
+                    onOpenFolder()
+                } label: {
+                    Label("Open Folder\u{2026}", systemImage: "folder")
+                }
+                .buttonStyle(.plain)
             }
         }
         .listStyle(.sidebar)

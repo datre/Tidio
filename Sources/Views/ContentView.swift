@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject var library: LibraryViewModel
     @StateObject private var compressionVM = CompressionViewModel()
     @StateObject private var duplicateVM = DuplicateViewModel()
+    @StateObject private var folderVM = FolderCompressionViewModel()
     @StateObject private var settings = AppSettings.shared
 
     var body: some View {
@@ -37,6 +38,20 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(isPresented: $folderVM.isShowingJobSheet) {
+            FolderJobSheetView(
+                files: folderVM.filesToProcess,
+                outputFolder: folderVM.outputFolder,
+                totalSourceBytes: folderVM.totalSourceBytes,
+                imageCount: folderVM.imageCount,
+                videoCount: folderVM.videoCount,
+                settings: settings,
+                engine: folderVM.engine,
+                onStart: { folderVM.startJob(settings: settings) },
+                onCancel: { folderVM.cancelJob() },
+                onDone: { folderVM.dismissSheet() }
+            )
+        }
     }
 
     // MARK: - Main Interface
@@ -48,7 +63,8 @@ struct ContentView: View {
                 sections: library.sections,
                 selection: library.selection,
                 onSelectAllPhotos: { library.selectAllPhotos() },
-                onSelectAlbum: { library.selectAlbum($0) }
+                onSelectAlbum: { library.selectAlbum($0) },
+                onOpenFolder: { folderVM.openFolder() }
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } content: {
