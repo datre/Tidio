@@ -222,12 +222,12 @@ actor PhotoLibraryService {
         if let found = existing.firstObject { return found }
 
         // Create it
-        var placeholder: PHObjectPlaceholder?
+        let box = PlaceholderBox()
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: title)
-            placeholder = request.placeholderForCreatedAssetCollection
+            box.placeholder = request.placeholderForCreatedAssetCollection
         }
-        guard let id = placeholder?.localIdentifier,
+        guard let id = box.placeholder?.localIdentifier,
               let created = PHAssetCollection.fetchAssetCollections(
                 withLocalIdentifiers: [id], options: nil
               ).firstObject
@@ -310,7 +310,7 @@ actor PhotoLibraryService {
             try? FileManager.default.removeItem(at: videoURL)
         }
 
-        var placeholder: PHObjectPlaceholder?
+        let box = PlaceholderBox()
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
 
@@ -334,9 +334,9 @@ actor PhotoLibraryService {
 
             if let date = creationDate { request.creationDate = date }
             if let loc = location { request.location = loc }
-            placeholder = request.placeholderForCreatedAsset
+            box.placeholder = request.placeholderForCreatedAsset
         }
-        guard let id = placeholder?.localIdentifier,
+        guard let id = box.placeholder?.localIdentifier,
               let saved = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
         else { throw LibraryError.saveFailed }
         return saved
@@ -351,26 +351,48 @@ actor PhotoLibraryService {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".heic")
         try data.write(to: tempURL)
+        log.info("  saveImage: wrote \(data.count) bytes to \(tempURL.lastPathComponent)")
 
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        // Use a class-based box to capture the placeholder from the @Sendable closure,
+        // avoiding Swift 6 issues with capturing mutable local variables.
+        let box = PlaceholderBox()
 
-        var placeholder: PHObjectPlaceholder?
-        try await PHPhotoLibrary.shared().performChanges {
-            let request = PHAssetCreationRequest.forAsset()
-            let resOpts = PHAssetResourceCreationOptions()
-            resOpts.shouldMoveFile = true
-            if let name = originalFilename {
-                let stem = (name as NSString).deletingPathExtension
-                resOpts.originalFilename = stem + ".heic"
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                let resOpts = PHAssetResourceCreationOptions()
+                resOpts.shouldMoveFile = true
+                if let name = originalFilename {
+                    let stem = (name as NSString).deletingPathExtension
+                    resOpts.originalFilename = stem + ".heic"
+                }
+                request.addResource(with: .photo, fileURL: tempURL, options: resOpts)
+                if let date = creationDate { request.creationDate = date }
+                if let loc = location { request.location = loc }
+                box.placeholder = request.placeholderForCreatedAsset
             }
-            request.addResource(with: .photo, fileURL: tempURL, options: resOpts)
-            if let date = creationDate { request.creationDate = date }
-            if let loc = location { request.location = loc }
-            placeholder = request.placeholderForCreatedAsset
+        } catch {
+            log.error("  saveImage: performChanges threw: \(String(describing: error))")
+            try? FileManager.default.removeItem(at: tempURL)
+            throw error
         }
-        guard let id = placeholder?.localIdentifier,
-              let saved = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
-        else { throw LibraryError.saveFailed }
+
+        // Clean up temp file (may already be moved by shouldMoveFile)
+        try? FileManager.default.removeItem(at: tempURL)
+
+        guard let id = box.placeholder?.localIdentifier else {
+            log.error("  saveImage: placeholder is nil after successful performChanges")
+            throw LibraryError.saveFailed
+        }
+        log.info("  saveImage: placeholder id=\(id)")
+
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
+        log.info("  saveImage: fetch returned \(fetchResult.count) assets")
+
+        guard let saved = fetchResult.firstObject else {
+            log.error("  saveImage: fetch returned 0 assets for id=\(id)")
+            throw LibraryError.saveFailed
+        }
         return saved
     }
 
@@ -378,7 +400,7 @@ actor PhotoLibraryService {
     /// - Parameter originalFilename: If provided, the resource's filename is set to this
     ///   (with extension changed to .mov).
     func saveVideo(at url: URL, creationDate: Date?, location: CLLocation?, originalFilename: String? = nil) async throws -> PHAsset {
-        var placeholder: PHObjectPlaceholder?
+        let box = PlaceholderBox()
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
@@ -390,9 +412,9 @@ actor PhotoLibraryService {
             request.addResource(with: .video, fileURL: url, options: options)
             if let date = creationDate { request.creationDate = date }
             if let loc = location { request.location = loc }
-            placeholder = request.placeholderForCreatedAsset
+            box.placeholder = request.placeholderForCreatedAsset
         }
-        guard let id = placeholder?.localIdentifier,
+        guard let id = box.placeholder?.localIdentifier,
               let saved = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
         else { throw LibraryError.saveFailed }
         return saved
@@ -419,6 +441,13 @@ enum LibraryError: LocalizedError {
 
 import AVFoundation
 import CoreLocation
+
+/// Thread-safe box for capturing PHObjectPlaceholder from @Sendable closures.
+/// Using a class avoids the Swift 6 issue where mutable local variables
+/// captured by @Sendable closures may not propagate mutations back.
+final class PlaceholderBox: @unchecked Sendable {
+    var placeholder: PHObjectPlaceholder?
+}
 
 /// Wraps a non-Sendable value for crossing actor boundaries where safety is ensured by design.
 struct UncheckedSendableBox<T>: @unchecked Sendable {

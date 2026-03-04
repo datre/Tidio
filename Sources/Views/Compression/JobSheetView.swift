@@ -114,65 +114,93 @@ struct JobSheetView: View {
     // MARK: - Progress Phase
 
     private var progressPhase: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 16) {
             // Header
             HStack {
-                Label("Compressing\u{2026}", systemImage: "bolt.fill")
+                Label("Processing\u{2026}", systemImage: "bolt.fill")
                     .font(.title2.bold())
                 Spacer()
-                Text("\(engine.completedCount) of \(engine.totalCount)")
+                Text("\(engine.convertedCount) of \(engine.totalCount)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
 
-            // Overall progress
-            VStack(alignment: .leading, spacing: 6) {
-                ProgressView(value: engine.overallProgress)
-                    .progressViewStyle(.linear)
-                Text("\(Int(engine.overallProgress * 100))% complete")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            // 1. Total progress
+            progressBar(
+                label: "Total Progress",
+                value: engine.overallProgress,
+                color: .accentColor,
+                detail: "\(Int(engine.overallProgress * 100))%"
+            )
 
             Divider()
 
-            // Current item
+            // 2. Current conversion
             if let item = engine.currentItemProgress {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        phaseIcon(item.phase)
-                            .foregroundStyle(phaseColor(item.phase))
+                        conversionPhaseIcon(item.phase)
+                            .foregroundStyle(conversionPhaseColor(item.phase))
                             .frame(width: 16)
-                        Text(item.phase.rawValue)
+                        Text("Converting: \(item.filename)")
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(phaseColor(item.phase))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-
-                    Text(item.filename)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
 
                     if item.fraction > 0 && item.fraction < 1 {
                         ProgressView(value: item.fraction)
                             .progressViewStyle(.linear)
-                            .tint(phaseColor(item.phase))
+                            .tint(conversionPhaseColor(item.phase))
                     } else {
                         ProgressView()
                             .progressViewStyle(.linear)
-                            .tint(phaseColor(item.phase))
+                            .tint(conversionPhaseColor(item.phase))
                     }
                 }
-            } else {
-                HStack(spacing: 6) {
+            }
+
+            Divider()
+
+            // 3. Download total progress
+            let downloadProgress = engine.totalCount > 0
+                ? Double(engine.downloadedCount) / Double(engine.totalCount)
+                : 0.0
+
+            progressBar(
+                label: "Downloads",
+                value: downloadProgress,
+                color: .orange,
+                detail: "\(engine.downloadedCount) of \(engine.totalCount)"
+            )
+
+            // 4. Current download
+            if let downloadName = engine.currentDownloadFilename {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "icloud.and.arrow.down")
+                            .foregroundStyle(.orange)
+                            .frame(width: 16)
+                        Text("Downloading: \(downloadName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
                     ProgressView()
-                        .scaleEffect(0.7)
-                    Text("Preparing\u{2026}")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .progressViewStyle(.linear)
+                        .tint(.orange)
                 }
+            }
+
+            // More Details toggle
+            if !engine.pipelineItems.isEmpty {
+                DisclosureGroup("More Details", isExpanded: $showingDetails) {
+                    pipelineDetailsView
+                }
+                .font(.subheadline)
             }
 
             Spacer()
@@ -183,6 +211,71 @@ struct JobSheetView: View {
                 Button("Cancel Job", role: .destructive, action: onCancel)
                     .buttonStyle(.bordered)
             }
+        }
+    }
+
+    // MARK: - Progress Bar Helper
+
+    private func progressBar(label: String, value: Double, color: Color, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(label)
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            ProgressView(value: value)
+                .progressViewStyle(.linear)
+                .tint(color)
+        }
+    }
+
+    // MARK: - Pipeline Details View
+
+    private var pipelineDetailsView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(engine.pipelineItems) { item in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(pipelineItemColor(item.status))
+                            .frame(width: 8, height: 8)
+
+                        Text(item.filename)
+                            .font(.caption)
+                            .foregroundStyle(pipelineItemColor(item.status))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        Spacer()
+
+                        if item.status == .downloading || item.status == .converting {
+                            ProgressView()
+                                .scaleEffect(0.5)
+                                .frame(width: 12, height: 12)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            .padding(.top, 4)
+        }
+        .frame(maxHeight: 200)
+    }
+
+    private func pipelineItemColor(_ status: CompressionEngine.PipelineItem.PipelineStatus) -> Color {
+        switch status {
+        case .pending:      return .secondary
+        case .downloading:  return .secondary
+        case .downloaded:   return .orange
+        case .converting:   return .orange
+        case .converted:    return .green
+        case .skipped:      return .secondary
+        case .failed:       return .red
         }
     }
 
@@ -227,7 +320,6 @@ struct JobSheetView: View {
             .background(.quinary)
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            // Size comparison
             if summary.originalBytes > 0 {
                 sizeSummary(summary)
             }
@@ -478,7 +570,7 @@ struct JobSheetView: View {
 
     // MARK: - Phase Styling
 
-    private func phaseIcon(_ phase: CompressionEngine.ItemProgress.Phase) -> some View {
+    private func conversionPhaseIcon(_ phase: CompressionEngine.ItemProgress.Phase) -> some View {
         switch phase {
         case .queued:      return Image(systemName: "clock")
         case .downloading: return Image(systemName: "icloud.and.arrow.down")
@@ -490,7 +582,7 @@ struct JobSheetView: View {
         }
     }
 
-    private func phaseColor(_ phase: CompressionEngine.ItemProgress.Phase) -> Color {
+    private func conversionPhaseColor(_ phase: CompressionEngine.ItemProgress.Phase) -> Color {
         switch phase {
         case .downloading: return .orange
         case .compressing: return .accentColor
