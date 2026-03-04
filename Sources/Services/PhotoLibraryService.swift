@@ -235,6 +235,19 @@ actor PhotoLibraryService {
         return created
     }
 
+    /// Returns all user-created albums that contain the given asset.
+    /// Excludes smart albums (which are auto-populated and cannot be modified).
+    func fetchContainingAlbums(for asset: PHAsset) -> [PHAssetCollection] {
+        let result = PHAssetCollection.fetchAssetCollectionsContaining(
+            asset, with: .album, options: nil
+        )
+        var albums: [PHAssetCollection] = []
+        result.enumerateObjects { collection, _, _ in
+            albums.append(collection)
+        }
+        return albums
+    }
+
     /// Adds assets to an album (does not move — adds a reference).
     func addAssets(_ assets: [PHAsset], to collection: PHAssetCollection) async throws {
         try await PHPhotoLibrary.shared().performChanges {

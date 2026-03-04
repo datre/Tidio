@@ -357,10 +357,17 @@ final class CompressionEngine: ObservableObject {
             throw CompressionSkipReason.alreadyOptimal
         }
 
-        // Add to albums
+        // Add to Tidio albums
         updatePhase(.saving, fraction: 0.8)
         try await PhotoLibraryService.shared.addAssets([result.newAsset], to: compressedAlbum)
         try await PhotoLibraryService.shared.addAssets([asset], to: originalsAlbum)
+
+        // Copy original album memberships to the new asset
+        let originalAlbums = await PhotoLibraryService.shared.fetchContainingAlbums(for: asset)
+        for album in originalAlbums {
+            try? await PhotoLibraryService.shared.addAssets([result.newAsset], to: album)
+        }
+
         updatePhase(.done, fraction: 1.0)
 
         let stem = (originalFilename as NSString).deletingPathExtension
