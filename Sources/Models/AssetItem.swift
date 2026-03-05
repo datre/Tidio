@@ -19,7 +19,7 @@ final class AssetItem: Identifiable, ObservableObject, @unchecked Sendable {
     let isCloudOnly: Bool       // true if full-res is not locally available
     let originalFormat: OriginalFormat
 
-    @Published var thumbnail: NSImage?
+    @Published var thumbnail: PlatformImage?
     @Published var isSelected: Bool = false
 
     init(asset: PHAsset) {

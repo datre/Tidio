@@ -1,6 +1,11 @@
 import SwiftUI
 import Photos
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct JobSheetView: View {
     let assets: [PHAsset]
@@ -27,7 +32,9 @@ struct JobSheetView: View {
             }
         }
         .padding(24)
+        #if os(macOS)
         .frame(width: sheetWidth)
+        #endif
         .frame(minHeight: 380)
         .interactiveDismissDisabled(engine.state == .running || engine.state == .paused)
         .animation(.easeInOut(duration: 0.25), value: showingDetails)
@@ -443,6 +450,7 @@ struct JobSheetView: View {
     // MARK: - Item Details
 
     private func itemDetailsView(_ items: [CompressionEngine.ItemDetail]) -> some View {
+        #if os(macOS)
         Table(items) {
             TableColumn("File") { item in
                 VStack(alignment: .leading, spacing: 1) {
@@ -494,6 +502,35 @@ struct JobSheetView: View {
         .tableStyle(.bordered(alternatesRowBackgrounds: true))
         .font(.caption.monospacedDigit())
         .frame(height: min(CGFloat(items.count) * 28 + 32, 240))
+        #else
+        List(items) { item in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.originalFilename)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if item.status == .compressed {
+                    HStack {
+                        Text(Self.formatBytes(item.originalBytes))
+                        Image(systemName: "arrow.right")
+                            .font(.caption2)
+                        Text(Self.formatBytes(item.compressedBytes))
+                            .foregroundStyle(.green)
+                        Spacer()
+                        Text("\(String(format: "%.0f", item.savingsPercent))%")
+                            .foregroundStyle(item.savedBytes > 0 ? .green : .orange)
+                    }
+                    .font(.caption2.monospacedDigit())
+                } else {
+                    Text(item.status.rawValue)
+                        .font(.caption2)
+                        .foregroundStyle(item.status == .failed ? .red : .secondary)
+                }
+            }
+        }
+        .listStyle(.plain)
+        .frame(height: min(CGFloat(items.count) * 48 + 16, 240))
+        #endif
     }
 
     // MARK: - CSV Export
@@ -507,6 +544,7 @@ struct JobSheetView: View {
             csv += "\(origName),\(compName),\(item.originalBytes),\(item.compressedBytes),\(item.savedBytes),\(pct),\(item.status.rawValue)\n"
         }
 
+        #if os(macOS)
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType.commaSeparatedText]
         panel.nameFieldStringValue = "Tidio-Report.csv"
@@ -514,6 +552,16 @@ struct JobSheetView: View {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? csv.write(to: url, atomically: true, encoding: .utf8)
+        #else
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("Tidio-Report.csv")
+        try? csv.write(to: tempURL, atomically: true, encoding: .utf8)
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = scene.windows.first,
+              let root = window.rootViewController else { return }
+        let activityVC = UIActivityViewController(activityItems: [tempURL], applicationActivities: nil)
+        activityVC.popoverPresentationController?.sourceView = window
+        root.present(activityVC, animated: true)
+        #endif
     }
 
     private func escapeCSV(_ value: String) -> String {

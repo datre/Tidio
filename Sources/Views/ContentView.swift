@@ -1,12 +1,22 @@
 import SwiftUI
 import Photos
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct ContentView: View {
     @EnvironmentObject var library: LibraryViewModel
     @StateObject private var compressionVM = CompressionViewModel()
     @StateObject private var duplicateVM = DuplicateViewModel()
-    @StateObject private var folderVM = FolderCompressionViewModel()
     @StateObject private var settings = AppSettings.shared
+    #if os(macOS)
+    @StateObject private var folderVM = FolderCompressionViewModel()
+    #endif
+    #if os(iOS)
+    @State private var showSettings = false
+    #endif
 
     var body: some View {
         Group {
@@ -38,6 +48,7 @@ struct ContentView: View {
                 }
             )
         }
+        #if os(macOS)
         .sheet(isPresented: $folderVM.isShowingJobSheet) {
             FolderJobSheetView(
                 files: folderVM.filesToProcess,
@@ -52,6 +63,7 @@ struct ContentView: View {
                 onDone: { folderVM.dismissSheet() }
             )
         }
+        #endif
     }
 
     // MARK: - Main Interface
@@ -59,21 +71,19 @@ struct ContentView: View {
     @ViewBuilder
     private var mainInterface: some View {
         NavigationSplitView {
-            SidebarView(
-                sections: library.sections,
-                selection: library.selection,
-                onSelectAllPhotos: { library.selectAllPhotos() },
-                onSelectAlbum: { library.selectAlbum($0) },
-                onOpenFolder: { folderVM.openFolder() }
-            )
+            sidebarView
+            #if os(macOS)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+            #endif
         } content: {
             AssetGridView(
                 assets: library.displayedAssets,
                 selection: library.selection,
                 isLoading: library.isLoadingAssets
             )
+            #if os(macOS)
             .navigationSplitViewColumnWidth(min: 400, ideal: 640)
+            #endif
         } detail: {
             InspectorView(
                 selection: library.selection,
@@ -87,13 +97,49 @@ struct ContentView: View {
                     duplicateVM.startScan(assets: assets)
                 }
             )
+            #if os(macOS)
             .navigationSplitViewColumnWidth(min: 240, ideal: 260)
+            #endif
         }
         .toolbar { toolbarItems }
         .safeAreaInset(edge: .bottom) { statusBar }
         .sheet(isPresented: isDuplicateScanVisible) {
             DuplicateReviewView(viewModel: duplicateVM, settings: settings)
         }
+        #if os(iOS)
+        .sheet(isPresented: $showSettings) {
+            NavigationStack {
+                SettingsView()
+                    .navigationTitle("Settings")
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showSettings = false }
+                        }
+                    }
+            }
+        }
+        #endif
+    }
+
+    // MARK: - Sidebar
+
+    private var sidebarView: some View {
+        #if os(macOS)
+        SidebarView(
+            sections: library.sections,
+            selection: library.selection,
+            onSelectAllPhotos: { library.selectAllPhotos() },
+            onSelectAlbum: { library.selectAlbum($0) },
+            onOpenFolder: { folderVM.openFolder() }
+        )
+        #else
+        SidebarView(
+            sections: library.sections,
+            selection: library.selection,
+            onSelectAllPhotos: { library.selectAllPhotos() },
+            onSelectAlbum: { library.selectAlbum($0) }
+        )
+        #endif
     }
 
     // MARK: - Toolbar
@@ -119,6 +165,13 @@ struct ContentView: View {
             }
             .disabled(!library.selection.hasSelection)
         }
+        #if os(iOS)
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button { showSettings = true } label: {
+                Image(systemName: "gear")
+            }
+        }
+        #endif
     }
 
     // MARK: - Status Bar
@@ -163,7 +216,13 @@ struct PermissionDeniedView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             Button("Open System Settings") {
+                #if os(macOS)
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!)
+                #else
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+                #endif
             }
         }
         .padding(40)

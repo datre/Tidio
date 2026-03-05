@@ -61,13 +61,25 @@ struct AssetThumbnailCell: View {
             // Thumbnail
             Group {
                 if let image = item.thumbnail {
+                    #if os(macOS)
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFill()
+                    #else
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                    #endif
                 } else {
+                    #if os(macOS)
                     Rectangle()
                         .fill(Color(.windowBackgroundColor))
                         .overlay(ProgressView().scaleEffect(0.5))
+                    #else
+                    Rectangle()
+                        .fill(Color(.systemBackground))
+                        .overlay(ProgressView().scaleEffect(0.5))
+                    #endif
                 }
             }
             .frame(width: 130, height: 130)
@@ -79,7 +91,9 @@ struct AssetThumbnailCell: View {
 
             // Selection checkbox
             Toggle("", isOn: Binding(get: { isSelected }, set: { _ in onToggle() }))
+                #if os(macOS)
                 .toggleStyle(.checkbox)
+                #endif
                 .labelsHidden()
                 .padding(4)
 
@@ -122,6 +136,8 @@ struct AssetThumbnailCell: View {
             }
         }
         .onTapGesture { onToggle() }
+        #if os(macOS)
         .help(item.sourceFilename ?? "")
+        #endif
     }
 }

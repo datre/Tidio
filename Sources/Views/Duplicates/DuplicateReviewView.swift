@@ -49,7 +49,9 @@ struct DuplicateReviewView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        #if os(macOS)
         .frame(width: 680, height: 520)
+        #endif
     }
 
     // MARK: - Scanning
@@ -154,18 +156,28 @@ struct DuplicateAssetCard: View {
     let isKeeping: Bool
     let onKeep: () -> Void
 
-    @State private var thumbnail: NSImage?
+    @State private var thumbnail: PlatformImage?
 
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
                 Group {
                     if let img = thumbnail {
+                        #if os(macOS)
                         Image(nsImage: img)
                             .resizable()
                             .scaledToFill()
+                        #else
+                        Image(uiImage: img)
+                            .resizable()
+                            .scaledToFill()
+                        #endif
                     } else {
+                        #if os(macOS)
                         Rectangle().fill(Color(.windowBackgroundColor))
+                        #else
+                        Rectangle().fill(Color(.systemBackground))
+                        #endif
                     }
                 }
                 .frame(width: 200, height: 200)

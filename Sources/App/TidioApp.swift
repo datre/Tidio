@@ -9,6 +9,7 @@ struct TidioApp: App {
             ContentView()
                 .environmentObject(libraryViewModel)
         }
+        #if os(macOS)
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
         .defaultSize(width: 1100, height: 720)
@@ -19,9 +20,12 @@ struct TidioApp: App {
                 }
             }
         }
+        #endif
 
+        #if os(macOS)
         Settings {
             SettingsView()
         }
+        #endif
     }
 }

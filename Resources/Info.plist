@@ -26,9 +26,22 @@
     <string>Tidio needs access to your photo library to scan for duplicates and compress photos and videos.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>Tidio needs permission to add compressed photos and videos to your photo library.</string>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.photography</string>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
 </dict>
 </plist>

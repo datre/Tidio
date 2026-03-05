@@ -11,7 +11,9 @@ struct SettingsView: View {
             AlbumSettingsTab(settings: settings)
                 .tabItem { Label("Albums", systemImage: "rectangle.stack") }
         }
+        #if os(macOS)
         .frame(width: 460, height: 380)
+        #endif
     }
 }
 
@@ -30,7 +32,11 @@ struct QualitySettingsTab: View {
                         }.tag(mode)
                     }
                 }
+                #if os(macOS)
                 .pickerStyle(.radioGroup)
+                #else
+                .pickerStyle(.inline)
+                #endif
 
                 if settings.photoQualityMode == .custom {
                     HStack {
@@ -51,7 +57,11 @@ struct QualitySettingsTab: View {
                         Text(mode.displayName).tag(mode)
                     }
                 }
+                #if os(macOS)
                 .pickerStyle(.radioGroup)
+                #else
+                .pickerStyle(.inline)
+                #endif
 
                 if settings.videoQualityMode == .custom {
                     HStack {
@@ -69,7 +79,11 @@ struct QualitySettingsTab: View {
                         Text(cap.displayName).tag(cap)
                     }
                 }
+                #if os(macOS)
                 .pickerStyle(.radioGroup)
+                #else
+                .pickerStyle(.inline)
+                #endif
             }
 
             Section("Skip Rules") {

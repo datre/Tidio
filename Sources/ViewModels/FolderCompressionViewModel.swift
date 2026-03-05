@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 
@@ -75,3 +76,4 @@ final class FolderCompressionViewModel: ObservableObject {
         filesToProcess.filter { FolderCompressionEngine.mediaKind(for: $0) == .some(.video) }.count
     }
 }
+#endif

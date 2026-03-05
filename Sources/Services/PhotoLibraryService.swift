@@ -1,6 +1,10 @@
 import Foundation
 import Photos
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import os.log
 
 private let log = Logger(subsystem: "com.tidio", category: "PhotoLibraryService")
@@ -88,7 +92,7 @@ actor PhotoLibraryService {
     // MARK: - Thumbnail Loading
 
     /// Loads a square thumbnail for display in the grid.
-    func loadThumbnail(for asset: PHAsset, size: CGSize) async -> NSImage? {
+    func loadThumbnail(for asset: PHAsset, size: CGSize) async -> PlatformImage? {
         await withCheckedContinuation { continuation in
             let options = PHImageRequestOptions()
             options.isNetworkAccessAllowed = true

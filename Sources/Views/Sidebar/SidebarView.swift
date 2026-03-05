@@ -6,7 +6,7 @@ struct SidebarView: View {
     @ObservedObject var selection: SelectionModel
     let onSelectAllPhotos: () -> Void
     let onSelectAlbum: (AlbumItem) -> Void
-    let onOpenFolder: () -> Void
+    var onOpenFolder: (() -> Void)? = nil
 
     var body: some View {
         List {
@@ -27,15 +27,19 @@ struct SidebarView: View {
                 }
             }
 
-            // Folder section
-            Section("Folders") {
-                Button {
-                    onOpenFolder()
-                } label: {
-                    Label("Open Folder\u{2026}", systemImage: "folder")
+            // Folder section (macOS only)
+            #if os(macOS)
+            if let onOpenFolder {
+                Section("Folders") {
+                    Button {
+                        onOpenFolder()
+                    } label: {
+                        Label("Open Folder\u{2026}", systemImage: "folder")
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+            #endif
         }
         .listStyle(.sidebar)
         .navigationTitle("Tidio")
@@ -44,7 +48,9 @@ struct SidebarView: View {
     private var allPhotosRow: some View {
         HStack {
             Toggle("", isOn: $selection.includeAllPhotos)
+                #if os(macOS)
                 .toggleStyle(.checkbox)
+                #endif
                 .labelsHidden()
             Button {
                 onSelectAllPhotos()
@@ -69,7 +75,9 @@ struct AlbumRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Toggle("", isOn: Binding(get: { isChecked }, set: { _ in onToggleCheck() }))
+                #if os(macOS)
                 .toggleStyle(.checkbox)
+                #endif
                 .labelsHidden()
 
             Button {
