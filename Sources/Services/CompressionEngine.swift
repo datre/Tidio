@@ -362,9 +362,10 @@ final class CompressionEngine: ObservableObject {
         try await PhotoLibraryService.shared.addAssets([result.newAsset], to: compressedAlbum)
         try await PhotoLibraryService.shared.addAssets([asset], to: originalsAlbum)
 
-        // Copy original album memberships to the new asset
+        // Copy original album memberships to the new asset, excluding Tidio's own albums
+        let tidioAlbumIDs: Set<String> = [compressedAlbum.localIdentifier, originalsAlbum.localIdentifier]
         let originalAlbums = await PhotoLibraryService.shared.fetchContainingAlbums(for: asset)
-        for album in originalAlbums {
+        for album in originalAlbums where !tidioAlbumIDs.contains(album.localIdentifier) {
             try? await PhotoLibraryService.shared.addAssets([result.newAsset], to: album)
         }
 

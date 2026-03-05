@@ -16,6 +16,7 @@ struct ContentView: View {
     #endif
     #if os(iOS)
     @State private var showSettings = false
+    @State private var showInspector = false
     #endif
 
     var body: some View {
@@ -70,20 +71,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private var mainInterface: some View {
+        #if os(macOS)
         NavigationSplitView {
             sidebarView
-            #if os(macOS)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
-            #endif
         } content: {
             AssetGridView(
                 assets: library.displayedAssets,
                 selection: library.selection,
                 isLoading: library.isLoadingAssets
             )
-            #if os(macOS)
             .navigationSplitViewColumnWidth(min: 400, ideal: 640)
-            #endif
         } detail: {
             InspectorView(
                 selection: library.selection,
@@ -97,16 +95,28 @@ struct ContentView: View {
                     duplicateVM.startScan(assets: assets)
                 }
             )
-            #if os(macOS)
             .navigationSplitViewColumnWidth(min: 240, ideal: 260)
-            #endif
         }
         .toolbar { toolbarItems }
         .safeAreaInset(edge: .bottom) { statusBar }
         .sheet(isPresented: isDuplicateScanVisible) {
             DuplicateReviewView(viewModel: duplicateVM, settings: settings)
         }
-        #if os(iOS)
+        #else
+        NavigationSplitView {
+            sidebarView
+        } detail: {
+            AssetGridView(
+                assets: library.displayedAssets,
+                selection: library.selection,
+                isLoading: library.isLoadingAssets
+            )
+            .toolbar { toolbarItems }
+            .safeAreaInset(edge: .bottom) { statusBar }
+        }
+        .sheet(isPresented: isDuplicateScanVisible) {
+            DuplicateReviewView(viewModel: duplicateVM, settings: settings)
+        }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
                 SettingsView()
@@ -116,6 +126,28 @@ struct ContentView: View {
                             Button("Done") { showSettings = false }
                         }
                     }
+            }
+        }
+        .sheet(isPresented: $showInspector) {
+            NavigationStack {
+                InspectorView(
+                    selection: library.selection,
+                    onStartCompression: {
+                        compressionVM.prepare(from: library.selection)
+                    },
+                    onScanDuplicates: {
+                        let result = library.selection.buildFetchResult()
+                        var assets: [PHAsset] = []
+                        result.enumerateObjects { a, _, _ in assets.append(a) }
+                        duplicateVM.startScan(assets: assets)
+                    }
+                )
+                .navigationTitle("Inspector")
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showInspector = false }
+                    }
+                }
             }
         }
         #endif
@@ -166,6 +198,11 @@ struct ContentView: View {
             .disabled(!library.selection.hasSelection)
         }
         #if os(iOS)
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button { showInspector = true } label: {
+                Image(systemName: "slider.horizontal.3")
+            }
+        }
         ToolbarItem(placement: .navigationBarTrailing) {
             Button { showSettings = true } label: {
                 Image(systemName: "gear")
