@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import SwiftUI
+import Combine
 
 /// Main view model — drives the sidebar, grid, and authorization state.
 @MainActor
@@ -28,9 +29,16 @@ final class LibraryViewModel: ObservableObject {
 
     @Published var selection = SelectionModel()
 
+    private var selectionSink: AnyCancellable?
+
     // MARK: - Init
 
     init() {
+        // Forward selection's change notifications so views observing
+        // LibraryViewModel re-render when selection state changes.
+        selectionSink = selection.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         Task { await checkAuthorization() }
     }
 
